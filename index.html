@@ -198,7 +198,7 @@ function ago(n){return n<=0?"今天":n===1?"昨天":n+" 天前"}
 function lsGet(k,def){try{var v=localStorage.getItem(k);return v?JSON.parse(v):def}catch(e){return def}}
 function lsSet(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
 
-var S={tab:"log",sel:"chest",range:30,openW:null,filterM:null,confirmDel:null,workouts:[],custom:[],mode:"local",
+var S={tab:"log",sel:"chest",range:30,openW:null,filterM:null,confirmDel:null,msg:"",workouts:[],custom:[],mode:"local",
   draft:lsGet("ironlog.draft",null)||{date:todayStr(),note:"",entries:[]}};
 var store=null;
 
@@ -371,6 +371,7 @@ function statsPanel(){
   if(!S.workouts.length)h+='<section class="card"><p class="empty"><b>還沒有資料</b>完成訓練後,這裡會顯示每個肌群練了幾組、多久沒練。</p></section>';
   var longest=null;MUS.forEach(function(m){var d=lt[m.id];if(d!==undefined&&(!longest||d>longest.d))longest={m:m,d:d}});
   if(longest&&longest.d>0)h+='<section class="card"><strong>最久沒練:'+longest.m.n+'</strong><p class="tag" style="margin:2px 0 0">'+ago(longest.d)+'練過。</p></section>';
+  h+='<section class="card"><h2>備份</h2><p class="tag" style="margin:-4px 0 10px">資料只存在這個瀏覽器。換裝置或清除網站資料前,先匯出存檔。</p><div class="row"><button class="btn" data-act="export">匯出備份</button><label class="btn" for="imp" style="cursor:pointer">匯入備份</label><input type="file" id="imp" accept=".json,application/json" hidden></div>'+(S.msg?'<p class="tag" role="status" style="margin:10px 0 0">'+esc(S.msg)+'</p>':'')+'</section>';
   h+='<section class="card"><h2>肌群分布</h2><p class="tag" style="margin:-4px 0 4px">每週約 12 組為滿格。次要肌群以半組計算。</p>';
   Object.keys(CATS).forEach(function(c){
     h+='<div class="cat-h">'+CATS[c].n+'</div>';
@@ -409,6 +410,33 @@ function saveWorkout(){
     S.draft={date:todayStr(),note:"",entries:[]};saveDraft();
     S.tab="history";S.openW=w.id;S.filterM=null;render();window.scrollTo(0,0);
   });
+}
+function exportData(){
+  var data={app:"ironlog",version:1,exportedAt:new Date().toISOString(),workouts:S.workouts,custom:S.custom};
+  var blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"}),url=URL.createObjectURL(blob);
+  var a=document.createElement("a");a.href=url;a.download="重訓筆記-"+todayStr()+".json";document.body.appendChild(a);a.click();a.remove();
+  setTimeout(function(){URL.revokeObjectURL(url)},1000);
+  S.msg="已匯出 "+S.workouts.length+" 次訓練。";render();
+}
+function importData(text){
+  var data;
+  try{data=JSON.parse(text)}catch(e){S.msg="檔案格式不對,請選用「匯出備份」存的 JSON 檔。";render();return}
+  if(!data||data.app!=="ironlog"||!Array.isArray(data.workouts)){S.msg="這不是重訓筆記的備份檔。";render();return}
+  var have={};S.workouts.forEach(function(w){have[w.id]=1});
+  var added=0,jobs=[];
+  data.workouts.forEach(function(w){
+    if(!w||typeof w.id!=="string"||!/^w[\w-]+$/.test(w.id)||!/^\d{4}-\d{2}-\d{2}$/.test(w.date||"")||!Array.isArray(w.entries)||have[w.id])return;
+    var ok=w.entries.every(function(e){return e&&MBY[e.m]&&typeof e.n==="string"&&Array.isArray(e.sets)});
+    if(!ok)return;
+    have[w.id]=1;added++;jobs.push(persistWorkout(w));
+  });
+  var cAdded=0;
+  (Array.isArray(data.custom)?data.custom:[]).forEach(function(c){
+    if(!c||typeof c.n!=="string"||!MBY[c.m])return;
+    if(!S.custom.some(function(x){return x.n===c.n&&x.m===c.m})){S.custom.push({n:c.n,m:c.m,s:Array.isArray(c.s)?c.s.filter(function(x){return MBY[x]}):[]});cAdded++}
+  });
+  if(cAdded)persistCustom();
+  Promise.all(jobs).then(function(){S.msg="匯入完成:新增 "+added+" 次訓練"+(added<data.workouts.length?",其餘已存在或格式不符,已略過":"")+"。";render()});
 }
 document.getElementById("tabs").addEventListener("click",function(ev){
   var b=ev.target.closest("button[data-tab]");if(!b)return;
@@ -449,12 +477,20 @@ panel.addEventListener("click",function(ev){
   else if(a==="filter-set"){S.filterM=S.sel;render()}
   else if(a==="filter-clear"){S.filterM=null;render()}
   else if(a==="range"){S.range=+d.r;render()}
+  else if(a==="export")exportData();
 });
 panel.addEventListener("input",function(ev){
   var t=ev.target;
   if(t.id==="d-date"){S.draft.date=t.value;saveDraft();return}
   if(t.id==="d-note"){S.draft.note=t.value;saveDraft();return}
   if(t.dataset.f){var e=findEntry(t.dataset.eid);if(!e)return;e.sets[+t.dataset.i][t.dataset.f]=t.value;saveDraft();liveUpdate()}
+});
+panel.addEventListener("change",function(ev){
+  if(ev.target.id!=="imp"||!ev.target.files[0])return;
+  var f=ev.target.files[0],r=new FileReader();
+  r.onload=function(){importData(String(r.result))};
+  r.onerror=function(){S.msg="讀不到這個檔案。";render()};
+  r.readAsText(f);
 });
 panel.addEventListener("keydown",function(ev){
   if(ev.key==="Enter"&&ev.target.id==="custom-name"){ev.preventDefault();var b=panel.querySelector('[data-act="add-custom"]');if(b)b.click()}
